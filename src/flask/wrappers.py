@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sys
 import typing as t
 
+from werkzeug.datastructures import Headers
 from werkzeug.exceptions import BadRequest
 from werkzeug.exceptions import HTTPException
 from werkzeug.wrappers import Request as RequestBase
@@ -9,6 +11,7 @@ from werkzeug.wrappers import Response as ResponseBase
 
 from . import json
 from .globals import current_app
+from .globals import request
 from .helpers import _split_blueprint_path
 
 if t.TYPE_CHECKING:  # pragma: no cover
@@ -172,3 +175,62 @@ class Response(ResponseBase):
 
         # return Werkzeug's default when not in an app context
         return super().max_cookie_size
+
+
+def tuple_adapter(app, rv, status, headers):
+    len_rv = len(rv)
+
+    # a 3-tuple is unpacked directly
+    if len_rv == 3:
+        rv, status, headers = rv  # type: ignore[misc]
+    # decide if a 2-tuple has status or headers
+    elif len_rv == 2:
+        if isinstance(rv[1], (Headers, dict, tuple, list)):
+            rv, headers = rv
+        else:
+            rv, status = rv  # type: ignore[assignment,misc]
+    # other sized tuples are not allowed
+    else:
+        raise TypeError(
+            "The view function did not return a valid response tuple."
+            " The tuple must have the form (body, status, headers),"
+            " (body, status), or (body, headers)."
+        )
+    return rv, status, headers
+
+
+def iterator_adapter(app, rv, status, headers):
+    # let the response class set the status and headers instead of
+    # waiting to do it manually, so that the class can handle any
+    # special logic
+    rv = app.response_class(
+        rv,
+        status=status,
+        headers=headers,  # type: ignore[arg-type]
+    )
+    status = headers = None
+    return rv, status, headers
+
+
+def json_adapter(app, rv, status, headers):
+    rv = app.json.response(rv)
+    return rv, status, headers
+
+
+def wsgi_adapter(app, rv, status, headers):
+    # evaluate a WSGI callable, or coerce a different response
+    # class to the correct type
+    try:
+        rv = app.response_class.force_type(
+            rv,  # type: ignore[arg-type]
+            request.environ,
+        )
+    except TypeError as e:
+        raise TypeError(
+            f"{e}\nThe view function did not return a valid"
+            " response. The return type must be a string,"
+            " dict, list, tuple with headers or status,"
+            " Response instance, or WSGI callable, but it"
+            f" was a {type(rv).__name__}."
+        ).with_traceback(sys.exc_info()[2]) from None
+    return rv, status, headers

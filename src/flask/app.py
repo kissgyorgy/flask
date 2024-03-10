@@ -12,7 +12,6 @@ from types import TracebackType
 from urllib.parse import quote as _url_quote
 
 import click
-from werkzeug.datastructures import Headers
 from werkzeug.datastructures import ImmutableDict
 from werkzeug.exceptions import BadRequestKeyError
 from werkzeug.exceptions import HTTPException
@@ -50,8 +49,12 @@ from .signals import request_finished
 from .signals import request_started
 from .signals import request_tearing_down
 from .templating import Environment
+from .wrappers import iterator_adapter
+from .wrappers import json_adapter
 from .wrappers import Request
 from .wrappers import Response
+from .wrappers import tuple_adapter
+from .wrappers import wsgi_adapter
 
 if t.TYPE_CHECKING:  # pragma: no cover
     from _typeshed.wsgi import StartResponse
@@ -208,6 +211,16 @@ class Flask(App):
     #: The class that is used for response objects.  See
     #: :class:`~flask.Response` for more information.
     response_class: type[Response] = Response
+
+    #: The list of response adapters for specific types in order of execution.
+    #: each one will convert the return value from the previous one
+    #: until `response_class` is returned
+    response_adapters = [
+        (tuple, tuple_adapter),
+        ((str, bytes, bytearray, cabc.Iterator), iterator_adapter),
+        ((dict, list), json_adapter),
+        ((BaseResponse, t.Callable), wsgi_adapter),
+    ]
 
     #: the session interface to use.  By default an instance of
     #: :class:`~flask.sessions.SecureCookieSessionInterface` is used here.
@@ -1137,27 +1150,11 @@ class Flask(App):
         """
 
         status = headers = None
-
-        # unpack tuple returns
-        if isinstance(rv, tuple):
-            len_rv = len(rv)
-
-            # a 3-tuple is unpacked directly
-            if len_rv == 3:
-                rv, status, headers = rv  # type: ignore[misc]
-            # decide if a 2-tuple has status or headers
-            elif len_rv == 2:
-                if isinstance(rv[1], (Headers, dict, tuple, list)):
-                    rv, headers = rv
-                else:
-                    rv, status = rv  # type: ignore[assignment,misc]
-            # other sized tuples are not allowed
-            else:
-                raise TypeError(
-                    "The view function did not return a valid response tuple."
-                    " The tuple must have the form (body, status, headers),"
-                    " (body, status), or (body, headers)."
-                )
+        for response_type, adapter in self.response_adapters:
+            if isinstance(rv, response_type):
+                rv, status, headers = adapter(self, rv, status, headers)
+                if isinstance(rv, self.response_class):
+                    break
 
         # the body must not be None
         if rv is None:
@@ -1166,45 +1163,15 @@ class Flask(App):
                 " return a valid response. The function either returned"
                 " None or ended without a return statement."
             )
-
         # make sure the body is an instance of the response class
-        if not isinstance(rv, self.response_class):
-            if isinstance(rv, (str, bytes, bytearray)) or isinstance(rv, cabc.Iterator):
-                # let the response class set the status and headers instead of
-                # waiting to do it manually, so that the class can handle any
-                # special logic
-                rv = self.response_class(
-                    rv,
-                    status=status,
-                    headers=headers,  # type: ignore[arg-type]
-                )
-                status = headers = None
-            elif isinstance(rv, (dict, list)):
-                rv = self.json.response(rv)
-            elif isinstance(rv, BaseResponse) or callable(rv):
-                # evaluate a WSGI callable, or coerce a different response
-                # class to the correct type
-                try:
-                    rv = self.response_class.force_type(
-                        rv,  # type: ignore[arg-type]
-                        request.environ,
-                    )
-                except TypeError as e:
-                    raise TypeError(
-                        f"{e}\nThe view function did not return a valid"
-                        " response. The return type must be a string,"
-                        " dict, list, tuple with headers or status,"
-                        " Response instance, or WSGI callable, but it"
-                        f" was a {type(rv).__name__}."
-                    ).with_traceback(sys.exc_info()[2]) from None
-            else:
-                raise TypeError(
-                    "The view function did not return a valid"
-                    " response. The return type must be a string,"
-                    " dict, list, tuple with headers or status,"
-                    " Response instance, or WSGI callable, but it was a"
-                    f" {type(rv).__name__}."
-                )
+        elif not isinstance(rv, self.response_class):
+            raise TypeError(
+                "The view function did not return a valid"
+                " response. The return type must be a string,"
+                " dict, list, tuple with headers or status,"
+                " Response instance, or WSGI callable, but it was a"
+                f" {type(rv).__name__}."
+            )
 
         rv = t.cast(Response, rv)
         # prefer the status if it was provided
