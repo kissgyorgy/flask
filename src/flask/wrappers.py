@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections.abc as cabc
 import sys
 import typing as t
 
@@ -10,12 +11,18 @@ from werkzeug.wrappers import Request as RequestBase
 from werkzeug.wrappers import Response as ResponseBase
 
 from . import json
+from . import typing as ft
 from .globals import current_app
 from .globals import request
 from .helpers import _split_blueprint_path
 
 if t.TYPE_CHECKING:  # pragma: no cover
     from werkzeug.routing import Rule
+
+    from .app import Flask
+
+Ts = t.TypeVar("Ts")
+Th = t.TypeVar("Th")
 
 
 class Request(RequestBase):
@@ -177,18 +184,21 @@ class Response(ResponseBase):
         return super().max_cookie_size
 
 
-def tuple_adapter(app, rv, status, headers):
-    len_rv = len(rv)
-
+def tuple_adapter(
+    app: Flask,
+    rt: ft.ResponseTuple,
+    status: ft.ResponseStatus | None,
+    headers: ft.HeadersValue | None,
+) -> tuple[ft.ResponseValue, ft.ResponseStatus | None, ft.HeadersValue | None]:
     # a 3-tuple is unpacked directly
-    if len_rv == 3:
-        rv, status, headers = rv  # type: ignore[misc]
+    if len(rt) == 3:
+        rv, status, headers = rt
     # decide if a 2-tuple has status or headers
-    elif len_rv == 2:
-        if isinstance(rv[1], (Headers, dict, tuple, list)):
-            rv, headers = rv
+    elif len(rt) == 2:
+        if isinstance(rt[1], (Headers, dict, tuple, list)):
+            rv, headers = rt
         else:
-            rv, status = rv  # type: ignore[assignment,misc]
+            rv, status = rt  # type: ignore[assignment]
     # other sized tuples are not allowed
     else:
         raise TypeError(
@@ -199,12 +209,17 @@ def tuple_adapter(app, rv, status, headers):
     return rv, status, headers
 
 
-def iterator_adapter(app, rv, status, headers):
+def iterator_adapter(
+    app: Flask,
+    rt: str | bytes | bytearray | cabc.Iterator[t.Any],
+    status: int | None,
+    headers: ft.HeadersValue | None,
+) -> tuple[Response, None, None]:
     # let the response class set the status and headers instead of
     # waiting to do it manually, so that the class can handle any
     # special logic
     rv = app.response_class(
-        rv,
+        rt,
         status=status,
         headers=headers,  # type: ignore[arg-type]
     )
@@ -212,12 +227,23 @@ def iterator_adapter(app, rv, status, headers):
     return rv, status, headers
 
 
-def json_adapter(app, rv, status, headers):
+@t.no_type_check
+def json_adapter(
+    app: Flask,
+    rv: dict[t.Any, t.Any] | list[t.Any],
+    status: Ts,
+    headers: Th,
+) -> tuple[Response, Ts, Th]:
     rv = app.json.response(rv)
     return rv, status, headers
 
 
-def wsgi_adapter(app, rv, status, headers):
+def wsgi_adapter(
+    app: Flask,
+    rv: Response | t.Callable,  # type: ignore[type-arg]
+    status: Ts,
+    headers: Th,
+) -> tuple[Response, Ts, Th]:
     # evaluate a WSGI callable, or coerce a different response
     # class to the correct type
     try:

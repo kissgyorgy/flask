@@ -1151,7 +1151,7 @@ class Flask(App):
 
         status = headers = None
         for response_type, adapter in self.response_adapters:
-            if isinstance(rv, response_type):
+            if isinstance(rv, response_type):  # type: ignore[arg-type]
                 rv, status, headers = adapter(self, rv, status, headers)
                 if isinstance(rv, self.response_class):
                     break
@@ -1173,17 +1173,16 @@ class Flask(App):
                 f" {type(rv).__name__}."
             )
 
-        rv = t.cast(Response, rv)
         # prefer the status if it was provided
         if status is not None:
             if isinstance(status, (str, bytes, bytearray)):
-                rv.status = status
+                rv.status = status  # type: ignore[assignment]
             else:
                 rv.status_code = status
 
         # extend existing headers with provided headers
         if headers:
-            rv.headers.update(headers)  # type: ignore[arg-type]
+            rv.headers.update(headers)
 
         return rv
 

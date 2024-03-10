@@ -30,12 +30,18 @@ HeadersValue = t.Union[
     t.Sequence[t.Tuple[str, HeaderValue]],
 ]
 
+ResponseStatus = t.Union[int, str, bytes, bytearray]
+
+ResponseTuple = t.Union[
+    t.Tuple[ResponseValue, HeadersValue],
+    t.Tuple[ResponseValue, ResponseStatus],
+    t.Tuple[ResponseValue, ResponseStatus, HeadersValue],
+]
+
 # The possible types returned by a route function.
 ResponseReturnValue = t.Union[
     ResponseValue,
-    t.Tuple[ResponseValue, HeadersValue],
-    t.Tuple[ResponseValue, int],
-    t.Tuple[ResponseValue, int, HeadersValue],
+    ResponseTuple,
     "WSGIApplication",
 ]
 
